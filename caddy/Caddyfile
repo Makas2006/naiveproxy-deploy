@@ -1,0 +1,24 @@
+{
+    order forward_proxy before file_server
+    admin 0.0.0.0:2019
+
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+:443, {$PUBLIC_DOMAIN}, {$SECRET_DOMAIN} {
+    tls {$ACME_EMAIL}
+
+    encode zstd gzip
+
+    forward_proxy {
+        import /etc/caddy/users.caddy
+        hide_ip
+        hide_via
+        probe_resistance
+    }
+
+    root * /srv/www
+    file_server
+}

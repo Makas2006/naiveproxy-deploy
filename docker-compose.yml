@@ -1,0 +1,71 @@
+services:
+  caddy:
+    build:
+      context: ./caddy
+    container_name: naive-caddy
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - ./caddy:/etc/caddy
+      - ./site:/srv/www:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    networks:
+      - internal
+
+  api:
+    build:
+      context: ./api
+    container_name: naive-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STATE_DIR: /state
+      USERS_CADDY: /etc/caddy/users.caddy
+      CADDYFILE: /etc/caddy/Caddyfile
+      CADDY_ADMIN_URL: http://caddy:2019
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./caddy:/etc/caddy
+      - ./state:/state
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    depends_on:
+      - caddy
+    networks:
+      - internal
+
+  bot:
+    build:
+      context: ./bot
+    container_name: naive-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      API_URL: http://api:3000
+    depends_on:
+      - api
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    networks:
+      - internal
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge

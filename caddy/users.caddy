@@ -1,0 +1,3 @@
+# Managed by the API container.
+# Each active account is rendered as:
+# basic_auth username password

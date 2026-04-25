@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+from pathlib import Path
 
 import httpx
 from aiogram import Bot, Dispatcher
@@ -8,28 +10,48 @@ from aiogram.types import Message
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 API_URL = os.getenv("API_URL", "http://api:3000")
-API_TOKEN = os.getenv("API_TOKEN", "")
+STATE_DIR = Path(os.getenv("STATE_DIR", "/state"))
+SETTINGS_FILE = STATE_DIR / "settings.json"
+
+
+def load_settings() -> dict[str, str]:
+    if SETTINGS_FILE.exists():
+        try:
+            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def setting(name: str, env_name: str, default: str = "") -> str:
+    return str(load_settings().get(name) or os.getenv(env_name, default))
+
+
+settings = load_settings()
+BOT_TOKEN = str(settings.get("bot_token") or BOT_TOKEN)
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not configured")
-if not ADMIN_CHAT_ID:
-    raise RuntimeError("ADMIN_CHAT_ID is not configured")
-if not API_TOKEN:
-    raise RuntimeError("API_TOKEN is not configured")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
 def is_admin(message: Message) -> bool:
-    return message.chat.id == ADMIN_CHAT_ID
+    try:
+        admin_chat_id = int(setting("admin_chat_id", "ADMIN_CHAT_ID", "0"))
+    except ValueError:
+        return False
+    return message.chat.id == admin_chat_id
 
 
 async def api_request(method: str, path: str) -> dict:
+    api_token = setting("api_token", "API_TOKEN")
+    if not api_token:
+        raise RuntimeError("API token is not configured")
     async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.request(method, f"{API_URL}{path}", headers={"X-API-Token": API_TOKEN})
+        response = await client.request(method, f"{API_URL}{path}", headers={"X-API-Token": api_token})
     if response.status_code >= 300:
         raise RuntimeError(f"{response.status_code}: {response.text}")
     return response.json()

@@ -1,0 +1,15 @@
+:443, {$PUBLIC_DOMAIN}, {$SECRET_DOMAIN} {
+    tls {$ACME_EMAIL}
+
+    encode zstd gzip
+
+    forward_proxy {
+        import /etc/caddy/users.caddy
+        hide_ip
+        hide_via
+        probe_resistance
+    }
+
+    root * /srv/www
+    file_server
+}

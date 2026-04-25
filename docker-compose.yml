@@ -29,6 +29,7 @@ services:
     environment:
       STATE_DIR: /state
       USERS_CADDY: /etc/caddy/users.caddy
+      SITE_CADDY: /etc/caddy/site.caddy
       CADDYFILE: /etc/caddy/Caddyfile
       CADDY_ADMIN_URL: http://caddy:2019
     ports:
@@ -55,6 +56,8 @@ services:
       API_URL: http://api:3000
     depends_on:
       - api
+    volumes:
+      - ./state:/state:ro
     ulimits:
       nofile:
         soft: 1048576

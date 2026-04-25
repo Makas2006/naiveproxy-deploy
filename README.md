@@ -39,7 +39,7 @@ After first boot, open the web panel by server IP:
 http://SERVER_IP:3000/
 ```
 
-Use the `API_TOKEN` from `.env` for the first login. The domain is used only for client proxy connections on port `443`; the panel stays on port `3000` and does not need a domain. The panel can change:
+Default panel login is `admin` / `admin`. Change it in the panel after the first login. The domain is used only for client proxy connections on port `443`; the panel stays on port `3000` and does not need a domain. The panel can change:
 
 - public domain
 - secret probe domain
@@ -47,6 +47,8 @@ Use the `API_TOKEN` from `.env` for the first login. The domain is used only for
 - API token
 - Telegram bot token
 - admin chat ID
+- panel username
+- panel password
 
 Settings are stored in `state/settings.json`. Caddy-related changes are applied with hot reload. Changing the Telegram bot token requires restarting only the bot container:
 
@@ -56,7 +58,7 @@ sudo docker compose restart bot
 
 ## API
 
-The API and panel are exposed on port `3000` by server IP and require `X-API-Token`.
+The API and panel are exposed on port `3000` by server IP. The browser panel uses admin login/password. Direct API calls can use `X-API-Token`.
 
 If the server is public, restrict port `3000` with a firewall to your admin IP:
 

@@ -34,6 +34,8 @@ class Settings(BaseModel):
     api_token: str = ""
     bot_token: str = ""
     admin_chat_id: str = ""
+    admin_username: str = "admin"
+    admin_password: str = "admin"
 
 
 class SettingsUpdate(BaseModel):
@@ -43,6 +45,8 @@ class SettingsUpdate(BaseModel):
     api_token: str
     bot_token: str
     admin_chat_id: str
+    admin_username: str
+    admin_password: str
 
 
 class UserCreateResponse(BaseModel):
@@ -63,6 +67,8 @@ def bootstrap_settings() -> Settings:
         api_token=os.getenv("API_TOKEN", ""),
         bot_token=os.getenv("BOT_TOKEN", ""),
         admin_chat_id=os.getenv("ADMIN_CHAT_ID", ""),
+        admin_username=os.getenv("ADMIN_USERNAME", "admin"),
+        admin_password=os.getenv("ADMIN_PASSWORD", "admin"),
     )
 
 
@@ -90,15 +96,31 @@ def save_settings(settings: Settings) -> None:
     atomic_write(SETTINGS_FILE, settings.model_dump_json(indent=2) + "\n")
 
 
-def require_token(x_api_token: Annotated[str | None, Header()] = None) -> None:
-    api_token = load_settings().api_token
-    if not api_token:
+def require_auth(
+    x_api_token: Annotated[str | None, Header()] = None,
+    x_admin_username: Annotated[str | None, Header()] = None,
+    x_admin_password: Annotated[str | None, Header()] = None,
+) -> None:
+    settings = load_settings()
+    api_token = settings.api_token
+    if api_token and x_api_token and secrets.compare_digest(x_api_token, api_token):
+        return
+
+    username_ok = bool(x_admin_username) and secrets.compare_digest(
+        x_admin_username, settings.admin_username
+    )
+    password_ok = bool(x_admin_password) and secrets.compare_digest(
+        x_admin_password, settings.admin_password
+    )
+    if username_ok and password_ok:
+        return
+
+    if not api_token and not settings.admin_username:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="api_token is not configured",
+            detail="admin credentials are not configured",
         )
-    if not x_api_token or not secrets.compare_digest(x_api_token, api_token):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
 
 def load_users() -> dict[str, str]:
@@ -188,12 +210,12 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/settings", response_model=Settings, dependencies=[Depends(require_token)])
+@app.get("/settings", response_model=Settings, dependencies=[Depends(require_auth)])
 async def get_settings() -> Settings:
     return load_settings()
 
 
-@app.put("/settings", dependencies=[Depends(require_token)])
+@app.put("/settings", dependencies=[Depends(require_auth)])
 async def update_settings(update: SettingsUpdate) -> dict[str, str]:
     old = load_settings()
     settings = Settings(**update.model_dump())
@@ -207,12 +229,12 @@ async def update_settings(update: SettingsUpdate) -> dict[str, str]:
     return {"status": "saved", "note": f"Caddy reloaded.{restart_note}"}
 
 
-@app.get("/users", response_model=UserListResponse, dependencies=[Depends(require_token)])
+@app.get("/users", response_model=UserListResponse, dependencies=[Depends(require_auth)])
 async def list_users() -> UserListResponse:
     return UserListResponse(users=sorted(load_users()))
 
 
-@app.post("/users/{name}", response_model=UserCreateResponse, dependencies=[Depends(require_token)])
+@app.post("/users/{name}", response_model=UserCreateResponse, dependencies=[Depends(require_auth)])
 async def add_user(name: str) -> UserCreateResponse:
     if not USERNAME_RE.fullmatch(name):
         raise HTTPException(status_code=400, detail="name must match [A-Za-z0-9_.-], max 32 chars")
@@ -232,7 +254,7 @@ async def add_user(name: str) -> UserCreateResponse:
     return UserCreateResponse(name=name, password=password, url=f"https://{name}:{password}@{settings.public_domain}")
 
 
-@app.delete("/users/{name}", dependencies=[Depends(require_token)])
+@app.delete("/users/{name}", dependencies=[Depends(require_auth)])
 async def delete_user(name: str) -> dict[str, str]:
     users = load_users()
     if name not in users:
@@ -283,8 +305,9 @@ HTML_PAGE = r"""<!doctype html>
   <section>
     <h2>Login</h2>
     <div class="row">
-      <label>API token <input id="token" type="password" autocomplete="current-password"></label>
-      <button onclick="saveToken()">Save token</button>
+      <label>Username <input id="login_user" autocomplete="username" value="admin"></label>
+      <label>Password <input id="login_pass" type="password" autocomplete="current-password" value="admin"></label>
+      <button onclick="saveLogin()">Login</button>
       <button class="secondary" onclick="loadAll()">Refresh</button>
     </div>
     <div id="status" class="status"></div>
@@ -298,6 +321,8 @@ HTML_PAGE = r"""<!doctype html>
     <label>API token <input id="api_token"></label>
     <label>Telegram bot token <input id="bot_token"></label>
     <label>Admin chat ID <input id="admin_chat_id"></label>
+    <label>Panel username <input id="admin_username"></label>
+    <label>Panel password <input id="admin_password" type="password"></label>
     <button onclick="saveSettings()">Save settings</button>
   </section>
 
@@ -313,19 +338,27 @@ HTML_PAGE = r"""<!doctype html>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const fields = ["public_domain", "secret_domain", "acme_email", "api_token", "bot_token", "admin_chat_id"];
+const fields = ["public_domain", "secret_domain", "acme_email", "api_token", "bot_token", "admin_chat_id", "admin_username", "admin_password"];
 
-function saveToken() {
-  localStorage.setItem("np_token", $("token").value);
+function saveLogin() {
+  localStorage.setItem("np_admin_user", $("login_user").value);
+  localStorage.setItem("np_admin_pass", $("login_pass").value);
   loadAll();
 }
 
-function token() {
-  return localStorage.getItem("np_token") || $("token").value;
+function adminUser() {
+  return localStorage.getItem("np_admin_user") || $("login_user").value || "admin";
+}
+
+function adminPass() {
+  return localStorage.getItem("np_admin_pass") || $("login_pass").value || "admin";
 }
 
 async function request(path, options = {}) {
-  const headers = Object.assign({"X-API-Token": token()}, options.headers || {});
+  const headers = Object.assign({
+    "X-Admin-Username": adminUser(),
+    "X-Admin-Password": adminPass()
+  }, options.headers || {});
   const res = await fetch(path, Object.assign({}, options, {headers}));
   const text = await res.text();
   if (!res.ok) throw new Error(`${res.status}: ${text}`);
@@ -335,7 +368,8 @@ async function request(path, options = {}) {
 async function loadAll() {
   $("status").textContent = "Loading...";
   try {
-    $("token").value = token();
+    $("login_user").value = adminUser();
+    $("login_pass").value = adminPass();
     const settings = await request("/settings");
     fields.forEach((field) => $(field).value = settings[field] || "");
     await loadUsers();
@@ -354,8 +388,10 @@ async function saveSettings() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
     });
-    localStorage.setItem("np_token", body.api_token);
-    $("token").value = body.api_token;
+    localStorage.setItem("np_admin_user", body.admin_username);
+    localStorage.setItem("np_admin_pass", body.admin_password);
+    $("login_user").value = body.admin_username;
+    $("login_pass").value = body.admin_password;
     $("status").textContent = result.note || "Saved";
   } catch (err) {
     $("status").textContent = `Save failed: ${err.message}`;
@@ -397,7 +433,8 @@ async function kickUser(name) {
 }
 
 window.addEventListener("load", () => {
-  $("token").value = token();
+  $("login_user").value = adminUser();
+  $("login_pass").value = adminPass();
 });
 </script>
 </body>

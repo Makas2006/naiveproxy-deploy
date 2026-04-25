@@ -32,7 +32,8 @@ settings = load_settings()
 BOT_TOKEN = str(settings.get("bot_token") or BOT_TOKEN)
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not configured")
+    print("BOT_TOKEN is not configured. Set it in the web panel, then restart this container.")
+    asyncio.run(asyncio.Event().wait())
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()

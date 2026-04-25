@@ -1,6 +1,4 @@
-:443, {$PUBLIC_DOMAIN}, {$SECRET_DOMAIN} {
-    tls {$ACME_EMAIL}
-
+http://:443 {
     encode zstd gzip
 
     forward_proxy {

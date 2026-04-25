@@ -9,7 +9,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 apt-get update
-apt-get install -y ca-certificates curl gnupg lsb-release
+apt-get install -y ca-certificates curl gnupg lsb-release openssl
 
 install -m 0755 -d /etc/apt/keyrings
 if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
@@ -51,9 +51,18 @@ systemctl restart docker
 
 cd "${PROJECT_DIR}"
 if [[ ! -f .env ]]; then
-  cp .env.example .env
-  echo "Created ${PROJECT_DIR}/.env. Edit it before starting the stack."
-  exit 0
+  API_TOKEN="$(openssl rand -hex 32)"
+  cat >.env <<EOF
+PUBLIC_DOMAIN=
+SECRET_DOMAIN=
+ACME_EMAIL=
+API_TOKEN=${API_TOKEN}
+BOT_TOKEN=
+ADMIN_CHAT_ID=
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin
+EOF
+  echo "Created ${PROJECT_DIR}/.env with generated API_TOKEN."
 fi
 
 docker compose up -d --build

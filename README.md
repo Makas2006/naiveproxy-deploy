@@ -13,7 +13,7 @@ This package builds Caddy v2 with `github.com/klzgrad/forwardproxy@naive`, expos
 
 ## Deploy on Debian
 
-1. Point DNS `A/AAAA` records for `PUBLIC_DOMAIN` and `SECRET_DOMAIN` to the server.
+1. Point DNS `A/AAAA` records for your proxy domain and optional secret probe domain to the server.
 2. Copy this directory to the server.
 3. Run:
 
@@ -21,13 +21,9 @@ This package builds Caddy v2 with `github.com/klzgrad/forwardproxy@naive`, expos
 sudo bash scripts/install_debian.sh
 ```
 
-4. Edit `.env` once for first boot:
+The installer creates `.env` automatically, generates `API_TOKEN`, applies BBR/fq and nofile tuning, then starts the stack.
 
-```sh
-nano .env
-```
-
-5. Start:
+Manual start or restart:
 
 ```sh
 sudo docker compose up -d --build
@@ -39,7 +35,9 @@ After first boot, open the web panel by server IP:
 http://SERVER_IP:3000/
 ```
 
-Default panel login is `admin` / `admin`. Change it in the panel after the first login. The domain is used only for client proxy connections on port `443`; the panel stays on port `3000` and does not need a domain. The panel can change:
+Default panel login is `admin` / `admin`. Change it in the panel after the first login. The domain is used only for client proxy connections on port `443`; the panel stays on port `3000` and does not need a domain.
+
+Set these values in the panel:
 
 - public domain
 - secret probe domain

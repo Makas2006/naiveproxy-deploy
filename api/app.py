@@ -64,7 +64,7 @@ def bootstrap_settings() -> Settings:
         public_domain=os.getenv("PUBLIC_DOMAIN", ""),
         secret_domain=os.getenv("SECRET_DOMAIN", ""),
         acme_email=os.getenv("ACME_EMAIL", ""),
-        api_token=os.getenv("API_TOKEN", ""),
+        api_token=os.getenv("API_TOKEN", "") or secrets.token_urlsafe(32),
         bot_token=os.getenv("BOT_TOKEN", ""),
         admin_chat_id=os.getenv("ADMIN_CHAT_ID", ""),
         admin_username=os.getenv("ADMIN_USERNAME", "admin"),
@@ -148,11 +148,11 @@ def render_users_caddy(users: dict[str, str]) -> str:
 
 
 def render_site_caddy(settings: Settings) -> str:
-    domain_line = ":443"
     domains = [settings.public_domain.strip(), settings.secret_domain.strip()]
     domains = [domain for domain in domains if domain]
+    domain_line = "http://:443"
     if domains:
-        domain_line += ", " + ", ".join(domains)
+        domain_line = ":443, " + ", ".join(domains)
 
     tls_line = ""
     if settings.acme_email.strip():
@@ -219,9 +219,17 @@ async def get_settings() -> Settings:
 async def update_settings(update: SettingsUpdate) -> dict[str, str]:
     old = load_settings()
     settings = Settings(**update.model_dump())
-    save_settings(settings)
+    old_site = SITE_CADDY.read_text(encoding="utf-8") if SITE_CADDY.exists() else ""
     atomic_write(SITE_CADDY, render_site_caddy(settings))
-    await reload_caddy()
+    try:
+        await reload_caddy()
+    except HTTPException:
+        atomic_write(SITE_CADDY, old_site)
+        try:
+            await reload_caddy()
+        finally:
+            raise
+    save_settings(settings)
 
     restart_note = ""
     if settings.bot_token != old.bot_token:
@@ -269,82 +277,181 @@ HTML_PAGE = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NaiveProxy Admin</title>
+  <title>NaiveProxy Panel</title>
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
-    body { margin: 0; background: #f5f7fb; color: #18212f; }
-    main { max-width: 980px; margin: 0 auto; padding: 32px 20px; }
-    h1 { font-size: 28px; margin: 0 0 20px; }
-    section { background: #fff; border: 1px solid #dbe2ee; border-radius: 8px; padding: 18px; margin: 16px 0; }
-    h2 { font-size: 18px; margin: 0 0 14px; }
-    label { display: grid; gap: 6px; margin: 10px 0; font-size: 13px; color: #445167; }
-    input { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; }
-    button { border: 0; border-radius: 6px; padding: 10px 14px; font: inherit; cursor: pointer; background: #155eef; color: #fff; }
-    button.secondary { background: #334155; }
-    button.danger { background: #c2410c; }
-    .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
-    .row label { flex: 1 1 240px; }
-    .status { margin-top: 10px; color: #445167; white-space: pre-wrap; }
-    .users { display: grid; gap: 8px; }
-    .user { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid #e2e8f0; }
-    code { display: block; overflow-wrap: anywhere; background: #eef2ff; color: #1e1b4b; padding: 10px; border-radius: 6px; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #111827; color: #e5e7eb; }
-      section { background: #1f2937; border-color: #374151; }
-      label, .status { color: #cbd5e1; }
-      input { background: #111827; border-color: #4b5563; color: #e5e7eb; }
-      .user { border-color: #374151; }
-      code { background: #111827; color: #dbeafe; }
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #0b1120;
+      --panel: #111827;
+      --panel-2: #0f172a;
+      --line: #243044;
+      --text: #e5edf8;
+      --muted: #8ea0b8;
+      --accent: #1677ff;
+      --accent-2: #22c55e;
+      --danger: #ef4444;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); }
+    button, input { font: inherit; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 244px 1fr; }
+    .side { background: #070d19; border-right: 1px solid var(--line); padding: 20px 14px; display: flex; flex-direction: column; gap: 18px; }
+    .brand { padding: 0 10px 14px; border-bottom: 1px solid var(--line); }
+    .brand-title { font-size: 18px; font-weight: 700; letter-spacing: .2px; }
+    .brand-sub { margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .nav { display: grid; gap: 6px; }
+    .nav button { width: 100%; border: 0; border-radius: 8px; padding: 11px 12px; color: var(--muted); background: transparent; text-align: left; cursor: pointer; transition: .16s ease; }
+    .nav button:hover, .nav button.active { background: #13223a; color: #fff; }
+    .side-foot { margin-top: auto; color: var(--muted); font-size: 12px; padding: 10px; border-top: 1px solid var(--line); }
+    .main { min-width: 0; }
+    .top { height: 66px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; background: rgba(15, 23, 42, .82); position: sticky; top: 0; backdrop-filter: blur(12px); z-index: 4; }
+    .title { font-size: 18px; font-weight: 700; }
+    .status-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; color: var(--muted); background: #0b1222; font-size: 13px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 14px var(--accent-2); }
+    .content { padding: 24px; display: grid; gap: 18px; }
+    .view { display: none; animation: rise .18s ease-out; }
+    .view.active { display: grid; gap: 18px; }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    .metric, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+    .metric { padding: 16px; }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .metric-value { margin-top: 10px; font-size: 26px; font-weight: 750; }
+    .panel { overflow: hidden; }
+    .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+    .panel-title { font-size: 15px; font-weight: 700; }
+    .panel-body { padding: 16px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    label { display: grid; gap: 7px; color: var(--muted); font-size: 13px; }
+    input { width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 10px 11px; background: #0a1220; color: var(--text); outline: none; transition: .16s ease; }
+    input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(22, 119, 255, .15); }
+    .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .btn { border: 0; border-radius: 7px; padding: 10px 13px; color: #fff; background: var(--accent); cursor: pointer; transition: .16s ease; }
+    .btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+    .btn.secondary { background: #263246; }
+    .btn.danger { background: var(--danger); }
+    .table { width: 100%; border-collapse: collapse; }
+    .table th, .table td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; }
+    .table th { color: var(--muted); font-weight: 600; background: #0d1526; }
+    .empty { padding: 22px; color: var(--muted); text-align: center; }
+    .code { display: block; word-break: break-all; border: 1px solid var(--line); border-radius: 7px; padding: 12px; background: #081120; color: #b8d7ff; }
+    .toast { min-height: 22px; color: var(--muted); white-space: pre-wrap; font-size: 13px; }
+    .login { max-width: 420px; margin: 12vh auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 22px; }
+    .login h1 { margin: 0 0 4px; font-size: 24px; }
+    .login p { margin: 0 0 18px; color: var(--muted); }
+    .hidden { display: none !important; }
+    @media (max-width: 860px) {
+      .shell { grid-template-columns: 1fr; }
+      .side { position: static; }
+      .grid, .form-grid { grid-template-columns: 1fr; }
+      .top { position: static; padding: 0 16px; }
+      .content { padding: 16px; }
     }
   </style>
 </head>
 <body>
-<main>
-  <h1>NaiveProxy Admin</h1>
-
-  <section>
-    <h2>Login</h2>
-    <div class="row">
-      <label>Username <input id="login_user" autocomplete="username" value="admin"></label>
-      <label>Password <input id="login_pass" type="password" autocomplete="current-password" value="admin"></label>
-      <button onclick="saveLogin()">Login</button>
-      <button class="secondary" onclick="loadAll()">Refresh</button>
+  <div id="login" class="login">
+    <h1>NaiveProxy Panel</h1>
+    <p>Default login is admin / admin.</p>
+    <label>Username <input id="login_user" autocomplete="username" value="admin"></label>
+    <label>Password <input id="login_pass" type="password" autocomplete="current-password" value="admin"></label>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn" onclick="saveLogin()">Login</button>
     </div>
-    <div id="status" class="status"></div>
-  </section>
+    <div id="login_status" class="toast" style="margin-top:12px"></div>
+  </div>
 
-  <section>
-    <h2>Settings</h2>
-    <label>Public domain <input id="public_domain"></label>
-    <label>Secret probe domain <input id="secret_domain"></label>
-    <label>ACME email <input id="acme_email"></label>
-    <label>API token <input id="api_token"></label>
-    <label>Telegram bot token <input id="bot_token"></label>
-    <label>Admin chat ID <input id="admin_chat_id"></label>
-    <label>Panel username <input id="admin_username"></label>
-    <label>Panel password <input id="admin_password" type="password"></label>
-    <button onclick="saveSettings()">Save settings</button>
-  </section>
+  <div id="app" class="shell hidden">
+    <aside class="side">
+      <div class="brand">
+        <div class="brand-title">NaiveProxy</div>
+        <div class="brand-sub">Caddy forwardproxy control</div>
+      </div>
+      <nav class="nav">
+        <button class="active" data-view="dashboard" onclick="showView('dashboard')">Dashboard</button>
+        <button data-view="clients" onclick="showView('clients')">Clients</button>
+        <button data-view="settings" onclick="showView('settings')">Settings</button>
+      </nav>
+      <div class="side-foot">Panel: http://SERVER_IP:3000<br>Proxy: domain:443</div>
+    </aside>
 
-  <section>
-    <h2>Users</h2>
-    <div class="row">
-      <label>New username <input id="new_user" placeholder="alice"></label>
-      <button onclick="addUser()">Add</button>
-    </div>
-    <div id="created" class="status"></div>
-    <div id="users" class="users"></div>
-  </section>
-</main>
+    <main class="main">
+      <header class="top">
+        <div class="title" id="page_title">Dashboard</div>
+        <div class="actions">
+          <span class="status-pill"><span class="dot"></span><span id="top_status">Online</span></span>
+          <button class="btn secondary" onclick="loadAll()">Refresh</button>
+          <button class="btn secondary" onclick="logout()">Logout</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <section id="dashboard" class="view active">
+          <div class="grid">
+            <div class="metric"><div class="metric-label">Active clients</div><div class="metric-value" id="metric_users">0</div></div>
+            <div class="metric"><div class="metric-label">Public domain</div><div class="metric-value" id="metric_domain">-</div></div>
+            <div class="metric"><div class="metric-label">HTTP stack</div><div class="metric-value">H2/H3</div></div>
+            <div class="metric"><div class="metric-label">Probe resistance</div><div class="metric-value">On</div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">Quick add client</div></div>
+            <div class="panel-body">
+              <div class="actions">
+                <label style="flex:1 1 260px">Username <input id="new_user_dash" placeholder="client01"></label>
+                <button class="btn" onclick="addUserFrom('new_user_dash')">Add client</button>
+              </div>
+              <div id="created" class="toast" style="margin-top:12px"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="clients" class="view">
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title">Clients</div>
+              <div class="actions">
+                <input id="new_user" placeholder="new username" style="width:220px">
+                <button class="btn" onclick="addUserFrom('new_user')">Add</button>
+              </div>
+            </div>
+            <div id="users"></div>
+          </div>
+        </section>
+
+        <section id="settings" class="view">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">Proxy settings</div></div>
+            <div class="panel-body form-grid">
+              <label>Public domain <input id="public_domain" placeholder="proxy.example.com"></label>
+              <label>Secret probe domain <input id="secret_domain" placeholder="secret.example.com"></label>
+              <label>ACME email <input id="acme_email" placeholder="admin@example.com"></label>
+              <label>API token <input id="api_token"></label>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">Telegram and panel access</div></div>
+            <div class="panel-body form-grid">
+              <label>Telegram bot token <input id="bot_token"></label>
+              <label>Admin chat ID <input id="admin_chat_id"></label>
+              <label>Panel username <input id="admin_username"></label>
+              <label>Panel password <input id="admin_password" type="password"></label>
+            </div>
+            <div class="panel-body actions">
+              <button class="btn" onclick="saveSettings()">Save settings</button>
+              <span id="status" class="toast"></span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const fields = ["public_domain", "secret_domain", "acme_email", "api_token", "bot_token", "admin_chat_id", "admin_username", "admin_password"];
-
-function saveLogin() {
-  localStorage.setItem("np_admin_user", $("login_user").value);
-  localStorage.setItem("np_admin_pass", $("login_pass").value);
-  loadAll();
-}
+let currentUsers = [];
 
 function adminUser() {
   return localStorage.getItem("np_admin_user") || $("login_user").value || "admin";
@@ -352,6 +459,12 @@ function adminUser() {
 
 function adminPass() {
   return localStorage.getItem("np_admin_pass") || $("login_pass").value || "admin";
+}
+
+function setToast(message) {
+  $("status").textContent = message || "";
+  $("login_status").textContent = message || "";
+  $("top_status").textContent = message ? "Attention" : "Online";
 }
 
 async function request(path, options = {}) {
@@ -365,17 +478,43 @@ async function request(path, options = {}) {
   return text ? JSON.parse(text) : {};
 }
 
+function saveLogin() {
+  localStorage.setItem("np_admin_user", $("login_user").value || "admin");
+  localStorage.setItem("np_admin_pass", $("login_pass").value || "admin");
+  loadAll();
+}
+
+function logout() {
+  localStorage.removeItem("np_admin_user");
+  localStorage.removeItem("np_admin_pass");
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("login_user").value = "admin";
+  $("login_pass").value = "admin";
+}
+
+function showView(name) {
+  document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
+  document.querySelectorAll(".nav button").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === name));
+  $("page_title").textContent = name[0].toUpperCase() + name.slice(1);
+}
+
 async function loadAll() {
-  $("status").textContent = "Loading...";
+  setToast("Loading...");
   try {
     $("login_user").value = adminUser();
     $("login_pass").value = adminPass();
     const settings = await request("/settings");
     fields.forEach((field) => $(field).value = settings[field] || "");
     await loadUsers();
-    $("status").textContent = "Ready";
+    $("metric_domain").textContent = settings.public_domain || "-";
+    $("login").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    setToast("");
   } catch (err) {
-    $("status").textContent = `Error: ${err.message}`;
+    $("app").classList.add("hidden");
+    $("login").classList.remove("hidden");
+    setToast(`Login failed: ${err.message}`);
   }
 }
 
@@ -388,36 +527,47 @@ async function saveSettings() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
     });
-    localStorage.setItem("np_admin_user", body.admin_username);
-    localStorage.setItem("np_admin_pass", body.admin_password);
-    $("login_user").value = body.admin_username;
-    $("login_pass").value = body.admin_password;
+    localStorage.setItem("np_admin_user", body.admin_username || "admin");
+    localStorage.setItem("np_admin_pass", body.admin_password || "admin");
+    $("login_user").value = body.admin_username || "admin";
+    $("login_pass").value = body.admin_password || "admin";
+    $("metric_domain").textContent = body.public_domain || "-";
     $("status").textContent = result.note || "Saved";
+    $("top_status").textContent = "Online";
   } catch (err) {
     $("status").textContent = `Save failed: ${err.message}`;
+    $("top_status").textContent = "Attention";
   }
 }
 
 async function loadUsers() {
   const result = await request("/users");
-  $("users").innerHTML = "";
-  result.users.forEach((name) => {
-    const row = document.createElement("div");
-    row.className = "user";
-    row.innerHTML = `<span>${name}</span><button class="danger">Kick</button>`;
-    row.querySelector("button").onclick = () => kickUser(name);
-    $("users").appendChild(row);
-  });
+  currentUsers = result.users || [];
+  $("metric_users").textContent = currentUsers.length;
+  if (!currentUsers.length) {
+    $("users").innerHTML = '<div class="empty">No active clients</div>';
+    return;
+  }
+  const rows = currentUsers.map((name) => `
+    <tr>
+      <td>${escapeHtml(name)}</td>
+      <td><span class="status-pill"><span class="dot"></span>enabled</span></td>
+      <td>https://${escapeHtml(name)}:***@${escapeHtml($("public_domain").value || "domain")}</td>
+      <td style="text-align:right"><button class="btn danger" onclick="kickUser('${escapeJs(name)}')">Kick</button></td>
+    </tr>`).join("");
+  $("users").innerHTML = `<table class="table"><thead><tr><th>Name</th><th>Status</th><th>Client URL</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-async function addUser() {
-  const name = $("new_user").value.trim();
+async function addUserFrom(inputId) {
+  const input = $(inputId);
+  const name = input.value.trim();
   if (!name) return;
   try {
     const result = await request(`/users/${encodeURIComponent(name)}`, {method: "POST"});
-    $("created").innerHTML = `Created:<code>${result.url}</code>`;
-    $("new_user").value = "";
+    $("created").innerHTML = `Created client URL:<span class="code">${escapeHtml(result.url)}</span>`;
+    input.value = "";
     await loadUsers();
+    showView("clients");
   } catch (err) {
     $("created").textContent = `Add failed: ${err.message}`;
   }
@@ -428,8 +578,16 @@ async function kickUser(name) {
     await request(`/users/${encodeURIComponent(name)}`, {method: "DELETE"});
     await loadUsers();
   } catch (err) {
-    $("status").textContent = `Kick failed: ${err.message}`;
+    setToast(`Kick failed: ${err.message}`);
   }
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function escapeJs(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 window.addEventListener("load", () => {

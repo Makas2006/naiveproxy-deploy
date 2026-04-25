@@ -1,6 +1,6 @@
 # NaiveProxy Caddy Deployment
 
-This package builds Caddy v2 with `github.com/klzgrad/forwardproxy@naive`, exposes HTTPS/H2/H3 on port `443`, and runs a local management API plus web panel on `127.0.0.1:3000`.
+This package builds Caddy v2 with `github.com/klzgrad/forwardproxy@naive`, exposes HTTPS/H2/H3 on port `443` for clients, and exposes the management API plus web panel on port `3000` by server IP.
 
 ## Files
 
@@ -33,13 +33,13 @@ nano .env
 sudo docker compose up -d --build
 ```
 
-After first boot, open the local web panel:
+After first boot, open the web panel by server IP:
 
 ```text
-http://127.0.0.1:3000/
+http://SERVER_IP:3000/
 ```
 
-Use the `API_TOKEN` from `.env` for the first login. The panel can then change:
+Use the `API_TOKEN` from `.env` for the first login. The domain is used only for client proxy connections on port `443`; the panel stays on port `3000` and does not need a domain. The panel can change:
 
 - public domain
 - secret probe domain
@@ -56,12 +56,20 @@ sudo docker compose restart bot
 
 ## API
 
-The API and panel are bound to localhost only.
+The API and panel are exposed on port `3000` by server IP and require `X-API-Token`.
+
+If the server is public, restrict port `3000` with a firewall to your admin IP:
 
 ```sh
-curl -H "X-API-Token: $API_TOKEN" http://127.0.0.1:3000/users
-curl -X POST -H "X-API-Token: $API_TOKEN" http://127.0.0.1:3000/users/alice
-curl -X DELETE -H "X-API-Token: $API_TOKEN" http://127.0.0.1:3000/users/alice
+sudo ufw allow 443/tcp
+sudo ufw allow 443/udp
+sudo ufw allow from YOUR_ADMIN_IP to any port 3000 proto tcp
+```
+
+```sh
+curl -H "X-API-Token: $API_TOKEN" http://SERVER_IP:3000/users
+curl -X POST -H "X-API-Token: $API_TOKEN" http://SERVER_IP:3000/users/alice
+curl -X DELETE -H "X-API-Token: $API_TOKEN" http://SERVER_IP:3000/users/alice
 ```
 
 Adding or deleting a user rewrites `caddy/users.caddy` and sends a hot reload to Caddy without restarting the process.
